@@ -9,6 +9,9 @@ import pandas as pd
 
 from . import pop_dialog_handler
 
+from DyCommon.DyCommon import DyLogData
+
+
 if not sys.platform.startswith("darwin"):
     try:
         import pywinauto
@@ -53,7 +56,27 @@ class Copy(BaseStrategy):
     通过复制 grid 内容到剪切板z再读取来获取 grid 内容
     """
 
-    def get(self, control_id):
+    def get(self, control_id, dataType):
+        print('同花顺客户端: 获取[{}]数据...'.format(dataType))
+
+        i = 0.5
+        while True:
+            pywinauto.clipboard.EmptyClipboard() # clear
+            time.sleep(0.1)
+
+            try:
+                df = self._get(control_id)
+            except Exception as ex:
+                print('同花顺客户端: 获取[{}]数据失败: {}, 重试...'.format(dataType, ex))
+            else:
+                break
+
+            i += 0.1
+            time.sleep(i)
+
+        return df
+
+    def _get(self, control_id):
         grid = self._get_grid(control_id)
         grid.type_keys("^A^C")
         content = self._get_clipboard_data()
@@ -69,12 +92,8 @@ class Copy(BaseStrategy):
         return df[df.columns[:-1]] # drop the last unnamed column
 
     def _get_clipboard_data(self):
-        while True:
-            try:
-                return pywinauto.clipboard.GetData()
-            # pylint: disable=broad-except
-            except Exception as e:
-                print("{}, retry ......".format(e))
+        return pywinauto.clipboard.GetData()
+
 
 
 class CommonConfig:
@@ -166,7 +185,9 @@ class ThsClientTrader(IClientTrader):
     # The strategy to use for getting grid data
     grid_strategy = Copy
 
-    def __init__(self):
+    def __init__(self, info):
+        self._info = info # DY info
+
         self._config = CommonConfig
         self._app = None
         self._main = None
@@ -231,26 +252,26 @@ class ThsClientTrader(IClientTrader):
     def position(self):
         self._switch_left_menus(["查询[F4]", "资金股票"])
 
-        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID)
+        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID, "持仓")
 
     @property
     def today_entrusts(self):
         self._switch_left_menus(["查询[F4]", "当日委托"])
 
-        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID)
+        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID, "当日委托")
 
     @property
     def today_trades(self):
         self._switch_left_menus(["查询[F4]", "当日成交"])
 
-        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID)
+        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID, "当日成交")
 
     @property
     def cancel_entrusts(self):
         self.refresh()
         self._switch_left_menus(["撤单[F3]"])
 
-        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID)
+        return self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID, "撤单")
 
     def cancel_entrust(self, entrust_no):
         self.refresh()
@@ -339,7 +360,7 @@ class ThsClientTrader(IClientTrader):
     def auto_ipo(self):
         self._switch_left_menus(self._config.AUTO_IPO_MENU_PATH)
 
-        stock_list = self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID)
+        stock_list = self._get_grid_data(self._config.COMMON_GRID_CONTROL_ID, "新股申购")
 
         if len(stock_list) == 0:
             return {"message": "今日无新股"}
@@ -472,8 +493,8 @@ class ThsClientTrader(IClientTrader):
 
         self._type_keys(self._config.TRADE_AMOUNT_CONTROL_ID, str(int(amount)))
 
-    def _get_grid_data(self, control_id):
-        return self.grid_strategy(self).get(control_id)
+    def _get_grid_data(self, control_id, dataType):
+        return self.grid_strategy(self).get(control_id, dataType)
 
     def _type_keys(self, control_id, text):
         self._main.window(
@@ -490,7 +511,7 @@ class ThsClientTrader(IClientTrader):
 
     @functools.lru_cache()
     def _get_left_menus_handle(self):
-        while True:
+        for _ in range(3):
             try:
                 handle = self._main.window(
                     control_id=129, class_name="SysTreeView32"
@@ -498,9 +519,12 @@ class ThsClientTrader(IClientTrader):
                 # sometime can't find handle ready, must retry
                 handle.wait("ready", 2)
                 return handle
-            # pylint: disable=broad-except
-            except Exception:
-                pass
+            except Exception as ex:
+                print('同花顺客户端: _get_left_menus_handle异常: {}'.format(self._main, handle, ex))
+        else:
+            text = '同花顺客户端: 请重新启动同花顺客户端和DevilYuan!'
+            print(text)
+            self._info.print(text, DyLogData.error)
 
     def _cancel_entrust_by_double_click(self, row):
         x = self._config.CANCEL_ENTRUST_GRID_LEFT_MARGIN
